@@ -1,0 +1,165 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import requests
+import urllib.parse
+
+# === API Config ===
+API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"
+ROUTE_URL = "https://graphhopper.com/api/1/route?"
+GEOCODE_URL = "https://graphhopper.com/api/1/geocode?"
+
+# === Utility Functions ===
+
+def geocode(location):
+    """Convert a place name to latitude and longitude using GraphHopper."""
+    if not location.strip():
+        return None, None, None, "Location cannot be empty."
+
+    url = GEOCODE_URL + urllib.parse.urlencode({
+        "q": location,
+        "limit": "1",
+        "key": API_KEY
+    })
+
+    try:
+        response = requests.get(url)
+        data = response.json()
+
+        if response.status_code == 200 and data["hits"]:
+            hit = data["hits"][0]
+            lat, lng = hit["point"]["lat"], hit["point"]["lng"]
+            name = hit.get("name", "")
+            state = hit.get("state", "")
+            country = hit.get("country", "")
+            full_name = ", ".join(filter(None, [name, state, country]))
+            return lat, lng, full_name, None
+        else:
+            return None, None, None, f"Could not find '{location}'. Try again."
+
+    except requests.exceptions.RequestException as e:
+        return None, None, None, f"Network error: {e}"
+
+def get_route(start, end, vehicle, use_miles):
+    """Fetch route from GraphHopper and return formatted data."""
+    try:
+        url = (
+            f"{ROUTE_URL}key={API_KEY}&vehicle={vehicle}"
+            f"&point={start[0]},{start[1]}&point={end[0]},{end[1]}"
+        )
+        response = requests.get(url)
+        data = response.json()
+
+        if response.status_code != 200:
+            return None, f"Routing failed: {data.get('message', 'Unknown error')}"
+
+        path = data["paths"][0]
+        distance_km = path["distance"] / 1000
+        distance_miles = distance_km / 1.609
+        time_sec = path["time"] / 1000
+        hrs, mins, secs = int(time_sec // 3600), int(time_sec % 3600 // 60), int(time_sec % 60)
+
+        distance = distance_miles if use_miles else distance_km
+        unit = "miles" if use_miles else "km"
+        summary = f"Distance: {distance:.1f} {unit}\nDuration: {hrs:02d}:{mins:02d}:{secs:02d}"
+
+        directions = []
+        for step in path["instructions"]:
+            txt = step["text"]
+            dist_km = step["distance"] / 1000
+            dist = dist_km / 1.609 if use_miles else dist_km
+            directions.append(f"{txt}  ({dist:.2f} {unit})")
+
+        return (summary, directions), None
+
+    except requests.exceptions.RequestException as e:
+        return None, f"Network error: {e}"
+
+# === GUI Setup ===
+
+class RouteApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("GraphHopper Route Planner")
+        self.geometry("700x600")
+        self.resizable(False, False)
+
+        self.create_widgets()
+
+    def create_widgets(self):
+        title = tk.Label(self, text="GraphHopper Route Planner", font=("Arial", 18, "bold"))
+        title.pack(pady=10)
+
+        frm_input = tk.Frame(self)
+        frm_input.pack(pady=10)
+
+        tk.Label(frm_input, text="Starting Location:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
+        tk.Label(frm_input, text="Destination:").grid(row=1, column=0, sticky="e", padx=5, pady=5)
+
+        self.start_entry = tk.Entry(frm_input, width=40)
+        self.end_entry = tk.Entry(frm_input, width=40)
+        self.start_entry.grid(row=0, column=1, padx=5)
+        self.end_entry.grid(row=1, column=1, padx=5)
+
+        tk.Label(frm_input, text="Vehicle Type:").grid(row=2, column=0, sticky="e", padx=5)
+        self.vehicle_choice = ttk.Combobox(frm_input, values=["car", "bike", "foot"], width=10, state="readonly")
+        self.vehicle_choice.set("car")
+        self.vehicle_choice.grid(row=2, column=1, sticky="w", padx=5)
+
+        self.unit_var = tk.BooleanVar()
+        self.unit_var.set(False)
+        tk.Checkbutton(frm_input, text="Use Miles", variable=self.unit_var).grid(row=3, column=1, sticky="w", padx=5)
+
+        tk.Button(self, text="Get Route", command=self.on_get_route, width=20, bg="#0078D7", fg="white").pack(pady=10)
+
+        # Output area
+        self.output_text = tk.Text(self, wrap="word", width=80, height=20, state="disabled", bg="#f9f9f9")
+        self.output_text.pack(padx=10, pady=10)
+
+    def on_get_route(self):
+        start_loc = self.start_entry.get().strip()
+        end_loc = self.end_entry.get().strip()
+        vehicle = self.vehicle_choice.get()
+        use_miles = self.unit_var.get()
+
+        # Validate input
+        if not start_loc or not end_loc:
+            messagebox.showerror("Input Error", "Please enter both starting and destination locations.")
+            return
+
+        # Geocode both
+        self.display_output("Geocoding locations...\n")
+        start_lat, start_lng, start_name, err1 = geocode(start_loc)
+        end_lat, end_lng, end_name, err2 = geocode(end_loc)
+
+        if err1:
+            messagebox.showerror("Error", err1)
+            return
+        if err2:
+            messagebox.showerror("Error", err2)
+            return
+
+        self.display_output(f"From: {start_name}\nTo: {end_name}\nVehicle: {vehicle}\n")
+
+        # Get route
+        result, error = get_route((start_lat, start_lng, start_name),
+                                  (end_lat, end_lng, end_name),
+                                  vehicle, use_miles)
+
+        if error:
+            messagebox.showerror("Route Error", error)
+            return
+
+        summary, directions = result
+        self.display_output("\n=== ROUTE SUMMARY ===\n" + summary + "\n\n=== DIRECTIONS ===\n")
+        for step in directions:
+            self.display_output(step + "\n")
+
+    def display_output(self, text):
+        self.output_text.config(state="normal")
+        self.output_text.insert(tk.END, text)
+        self.output_text.see(tk.END)
+        self.output_text.config(state="disabled")
+
+if __name__ == "__main__":
+    app = RouteApp()
+    app.mainloop()
