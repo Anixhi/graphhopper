@@ -138,6 +138,7 @@ class RouteApp(tk.Tk):
             messagebox.showerror("Error", err2)
             return
 
+
         self.display_output(f"From: {start_name}\nTo: {end_name}\nVehicle: {vehicle}\n")
 
         # Get route
@@ -154,6 +155,7 @@ class RouteApp(tk.Tk):
         for step in directions:
             self.display_output(step + "\n")
 
+
     def display_output(self, text):
         self.output_text.config(state="normal")
         self.output_text.insert(tk.END, text)
@@ -161,5 +163,11 @@ class RouteApp(tk.Tk):
         self.output_text.config(state="disabled")
 
 if __name__ == "__main__":
-    app = RouteApp()
-    app.mainloop()
+    try:
+        app = RouteApp()
+        print("Starting RouteApp...")
+        app.mainloop()
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+    finally:
+        print("Application closed.")
