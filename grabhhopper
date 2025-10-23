@@ -2,6 +2,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import requests
 import urllib.parse
+import threading
+import webbrowser
 
 # === API Config ===
 API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"
@@ -9,7 +11,6 @@ ROUTE_URL = "https://graphhopper.com/api/1/route?"
 GEOCODE_URL = "https://graphhopper.com/api/1/geocode?"
 
 # === Utility Functions ===
-
 def geocode(location):
     """Convert a place name to latitude and longitude using GraphHopper."""
     if not location.strip():
@@ -75,45 +76,61 @@ def get_route(start, end, vehicle, use_miles):
         return None, f"Network error: {e}"
 
 # === GUI Setup ===
-
 class RouteApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("GraphHopper Route Planner")
-        self.geometry("700x600")
-        self.resizable(False, False)
+        self.geometry("800x650")
+        self.resizable(True, True)
 
         self.create_widgets()
 
     def create_widgets(self):
-        title = tk.Label(self, text="GraphHopper Route Planner", font=("Arial", 18, "bold"))
+        title = tk.Label(self, text="🚗 GraphHopper Route Planner", font=("Arial", 20, "bold"), fg="#0078D7")
         title.pack(pady=10)
 
         frm_input = tk.Frame(self)
         frm_input.pack(pady=10)
 
+        # Labels and Entries
         tk.Label(frm_input, text="Starting Location:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
         tk.Label(frm_input, text="Destination:").grid(row=1, column=0, sticky="e", padx=5, pady=5)
 
-        self.start_entry = tk.Entry(frm_input, width=40)
-        self.end_entry = tk.Entry(frm_input, width=40)
+        self.start_entry = tk.Entry(frm_input, width=45)
+        self.end_entry = tk.Entry(frm_input, width=45)
         self.start_entry.grid(row=0, column=1, padx=5)
         self.end_entry.grid(row=1, column=1, padx=5)
 
+        # Vehicle Selector
         tk.Label(frm_input, text="Vehicle Type:").grid(row=2, column=0, sticky="e", padx=5)
         self.vehicle_choice = ttk.Combobox(frm_input, values=["car", "bike", "foot"], width=10, state="readonly")
         self.vehicle_choice.set("car")
         self.vehicle_choice.grid(row=2, column=1, sticky="w", padx=5)
 
+        # Unit toggle
         self.unit_var = tk.BooleanVar()
         self.unit_var.set(False)
         tk.Checkbutton(frm_input, text="Use Miles", variable=self.unit_var).grid(row=3, column=1, sticky="w", padx=5)
 
-        tk.Button(self, text="Get Route", command=self.on_get_route, width=20, bg="#0078D7", fg="white").pack(pady=10)
+        # Buttons
+        frm_btn = tk.Frame(self)
+        frm_btn.pack(pady=10)
+        tk.Button(frm_btn, text="Get Route", command=self.run_threaded, width=15, bg="#0078D7", fg="white").grid(row=0, column=0, padx=5)
+        tk.Button(frm_btn, text="Clear", command=self.clear_output, width=15, bg="#555", fg="white").grid(row=0, column=1, padx=5)
 
-        # Output area
-        self.output_text = tk.Text(self, wrap="word", width=80, height=20, state="disabled", bg="#f9f9f9")
-        self.output_text.pack(padx=10, pady=10)
+        # Output area (scrollable)
+        self.output_frame = tk.Frame(self)
+        self.output_frame.pack(padx=10, pady=10, fill="both", expand=True)
+
+        self.output_scroll = tk.Scrollbar(self.output_frame)
+        self.output_scroll.pack(side="right", fill="y")
+
+        self.output_text = tk.Text(self.output_frame, wrap="word", width=90, height=25, state="disabled", bg="#f9f9f9", yscrollcommand=self.output_scroll.set)
+        self.output_text.pack(side="left", fill="both", expand=True)
+        self.output_scroll.config(command=self.output_text.yview)
+
+    def run_threaded(self):
+        threading.Thread(target=self.on_get_route, daemon=True).start()
 
     def on_get_route(self):
         start_loc = self.start_entry.get().strip()
@@ -121,13 +138,12 @@ class RouteApp(tk.Tk):
         vehicle = self.vehicle_choice.get()
         use_miles = self.unit_var.get()
 
-        # Validate input
         if not start_loc or not end_loc:
             messagebox.showerror("Input Error", "Please enter both starting and destination locations.")
             return
 
-        # Geocode both
-        self.display_output("Geocoding locations...\n")
+        self.display_output("🛰 Geocoding locations...\n", clear=True)
+
         start_lat, start_lng, start_name, err1 = geocode(start_loc)
         end_lat, end_lng, end_name, err2 = geocode(end_loc)
 
@@ -138,9 +154,8 @@ class RouteApp(tk.Tk):
             messagebox.showerror("Error", err2)
             return
 
-        self.display_output(f"From: {start_name}\nTo: {end_name}\nVehicle: {vehicle}\n")
+        self.display_output(f"From: {start_name}\nTo: {end_name}\nVehicle: {vehicle}\n\nFetching route...\n")
 
-        # Get route
         result, error = get_route((start_lat, start_lng, start_name),
                                   (end_lat, end_lng, end_name),
                                   vehicle, use_miles)
@@ -150,14 +165,37 @@ class RouteApp(tk.Tk):
             return
 
         summary, directions = result
-        self.display_output("\n=== ROUTE SUMMARY ===\n" + summary + "\n\n=== DIRECTIONS ===\n")
-        for step in directions:
-            self.display_output(step + "\n")
+        self.display_output("=== ROUTE SUMMARY ===\n", color="blue")
+        self.display_output(summary + "\n\n", bold=True)
 
-    def display_output(self, text):
+        # Google Maps link
+        gmap_url = f"https://www.google.com/maps/dir/{start_lat},{start_lng}/{end_lat},{end_lng}/"
+        self.display_output(f"🗺 Open in Google Maps: {gmap_url}\n\n", color="green")
+
+        self.display_output("=== DIRECTIONS ===\n", color="#444")
+        for step in directions:
+            self.display_output("• " + step + "\n")
+
+    def display_output(self, text, clear=False, bold=False, color=None):
         self.output_text.config(state="normal")
-        self.output_text.insert(tk.END, text)
+        if clear:
+            self.output_text.delete("1.0", tk.END)
+
+        tag = None
+        if bold:
+            tag = "bold"
+            self.output_text.tag_config("bold", font=("Arial", 10, "bold"))
+        elif color:
+            tag = color
+            self.output_text.tag_config(color, foreground=color)
+
+        self.output_text.insert(tk.END, text, tag)
         self.output_text.see(tk.END)
+        self.output_text.config(state="disabled")
+
+    def clear_output(self):
+        self.output_text.config(state="normal")
+        self.output_text.delete("1.0", tk.END)
         self.output_text.config(state="disabled")
 
 if __name__ == "__main__":
