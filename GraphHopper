@@ -4,6 +4,7 @@ import requests
 import urllib.parse
 import threading
 import logging
+import polyline  # pip install polyline
 
 # === Configuration ===
 API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"
@@ -49,8 +50,9 @@ def geocode(location):
     except requests.exceptions.RequestException as e:
         return None, None, None, f"Network error: {e}"
 
+
 def get_route(start, end, vehicle, use_miles):
-    """Fetch route from GraphHopper and return formatted summary + directions."""
+    """Fetch route from GraphHopper and return formatted summary + directions + data."""
     try:
         url = (
             f"{ROUTE_URL}key={API_KEY}&vehicle={vehicle}"
@@ -79,12 +81,45 @@ def get_route(start, end, vehicle, use_miles):
             dist = dist_km / 1.609 if use_miles else dist_km
             directions.append(f"{txt}  ({dist:.2f} {unit})")
 
-        return (summary, directions), None
+        # Include raw data for later use (e.g., decoding route points)
+        return (summary, directions, data), None
 
     except requests.exceptions.Timeout:
         return None, "The routing request timed out. Please try again."
     except requests.exceptions.RequestException as e:
         return None, f"Network error: {e}"
+
+
+def find_restaurants_via_graphhopper(path_coords, radius=1500, max_results=10):
+    """Find restaurants near route points using GraphHopper Geocoding API."""
+    if not path_coords:
+        return ["No route coordinates available."]
+
+    found = []
+    step = max(1, len(path_coords) // 10)  # sample ~10 points along the route
+    sampled_points = path_coords[::step]
+
+    for lat, lon in sampled_points:
+        url = (
+            f"{GEOCODE_URL}q=restaurant"
+            f"&point={lat},{lon}"
+            f"&radius={radius}&limit={max_results}&key={API_KEY}"
+        )
+        try:
+            resp = requests.get(url, timeout=10)
+            data = resp.json()
+            for hit in data.get("hits", []):
+                name = hit.get("name", "Unnamed Restaurant")
+                city = hit.get("city", "")
+                dist = hit.get("distance", 0)
+                found.append(f"{name}, {city} ({dist:.0f} m away)")
+        except Exception as e:
+            logging.warning(f"GraphHopper restaurant search failed: {e}")
+
+    if not found:
+        found.append("No nearby restaurants found using GraphHopper.")
+    return found[:max_results]
+
 
 # === GUI Application ===
 
@@ -183,12 +218,24 @@ class RouteApp(tk.Tk):
                 self.progress.stop()
                 return
 
-            summary, directions = result
+            summary, directions, data = result
             self.display_output("\n=== ROUTE SUMMARY ===\n" + summary + "\n\n=== DIRECTIONS ===\n")
             for step in directions:
                 self.display_output(step + "\n")
 
+            # Step 3: Find nearby restaurants using GraphHopper
+            self.display_output("\n=== NEARBY RESTAURANTS ALONG ROUTE ===\n")
+            try:
+                coords = polyline.decode(data["paths"][0]["points"])
+                restaurants = find_restaurants_via_graphhopper(coords)
+                for r in restaurants:
+                    self.display_output(f"- {r}\n")
+            except Exception as e:
+                logging.exception("Error while finding restaurants.")
+                self.display_output(f"Error suggesting restaurants: {e}\n")
+
             logging.info("Route successfully fetched and displayed.")
+
         except Exception as e:
             logging.exception("Unexpected error occurred while getting route.")
             messagebox.showerror("Unexpected Error", f"Something went wrong:\n\n{e}")
@@ -202,6 +249,7 @@ class RouteApp(tk.Tk):
         self.output_text.insert(tk.END, text)
         self.output_text.see(tk.END)
         self.output_text.config(state="disabled")
+
 
 # === Entry Point ===
 if __name__ == "__main__":
