@@ -3,14 +3,21 @@ from tkinter import ttk, messagebox
 import requests
 import urllib.parse
 import threading
-import webbrowser
+import logging
 
-# === API Config ===
+# === Configuration ===
 API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"
 ROUTE_URL = "https://graphhopper.com/api/1/route?"
 GEOCODE_URL = "https://graphhopper.com/api/1/geocode?"
 
+# === Logging Setup ===
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
 # === Utility Functions ===
+
 def geocode(location):
     """Convert a place name to latitude and longitude using GraphHopper."""
     if not location.strip():
@@ -23,7 +30,7 @@ def geocode(location):
     })
 
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         data = response.json()
 
         if response.status_code == 200 and data["hits"]:
@@ -37,20 +44,22 @@ def geocode(location):
         else:
             return None, None, None, f"Could not find '{location}'. Try again."
 
+    except requests.exceptions.Timeout:
+        return None, None, None, "The request timed out. Please try again."
     except requests.exceptions.RequestException as e:
         return None, None, None, f"Network error: {e}"
 
 def get_route(start, end, vehicle, use_miles):
-    """Fetch route from GraphHopper and return formatted data."""
+    """Fetch route from GraphHopper and return formatted summary + directions."""
     try:
         url = (
             f"{ROUTE_URL}key={API_KEY}&vehicle={vehicle}"
             f"&point={start[0]},{start[1]}&point={end[0]},{end[1]}"
         )
-        response = requests.get(url)
+        response = requests.get(url, timeout=15)
         data = response.json()
 
-        if response.status_code != 200:
+        if response.status_code != 200 or "paths" not in data:
             return None, f"Routing failed: {data.get('message', 'Unknown error')}"
 
         path = data["paths"][0]
@@ -64,7 +73,7 @@ def get_route(start, end, vehicle, use_miles):
         summary = f"Distance: {distance:.1f} {unit}\nDuration: {hrs:02d}:{mins:02d}:{secs:02d}"
 
         directions = []
-        for step in path["instructions"]:
+        for step in path.get("instructions", []):
             txt = step["text"]
             dist_km = step["distance"] / 1000
             dist = dist_km / 1.609 if use_miles else dist_km
@@ -72,67 +81,66 @@ def get_route(start, end, vehicle, use_miles):
 
         return (summary, directions), None
 
+    except requests.exceptions.Timeout:
+        return None, "The routing request timed out. Please try again."
     except requests.exceptions.RequestException as e:
         return None, f"Network error: {e}"
 
-# === GUI Setup ===
+# === GUI Application ===
+
 class RouteApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("GraphHopper Route Planner")
-        self.geometry("800x650")
-        self.resizable(True, True)
-
+        self.geometry("700x620")
+        self.resizable(False, False)
         self.create_widgets()
 
     def create_widgets(self):
-        title = tk.Label(self, text="🚗 GraphHopper Route Planner", font=("Arial", 20, "bold"), fg="#0078D7")
+        """Set up all UI widgets."""
+        title = tk.Label(self, text="GraphHopper Route Planner", font=("Arial", 18, "bold"))
         title.pack(pady=10)
 
         frm_input = tk.Frame(self)
         frm_input.pack(pady=10)
 
-        # Labels and Entries
+        # Input fields
         tk.Label(frm_input, text="Starting Location:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
         tk.Label(frm_input, text="Destination:").grid(row=1, column=0, sticky="e", padx=5, pady=5)
+        tk.Label(frm_input, text="Vehicle Type:").grid(row=2, column=0, sticky="e", padx=5)
 
-        self.start_entry = tk.Entry(frm_input, width=45)
-        self.end_entry = tk.Entry(frm_input, width=45)
+        self.start_entry = tk.Entry(frm_input, width=40)
+        self.end_entry = tk.Entry(frm_input, width=40)
         self.start_entry.grid(row=0, column=1, padx=5)
         self.end_entry.grid(row=1, column=1, padx=5)
 
-        # Vehicle Selector
-        tk.Label(frm_input, text="Vehicle Type:").grid(row=2, column=0, sticky="e", padx=5)
         self.vehicle_choice = ttk.Combobox(frm_input, values=["car", "bike", "foot"], width=10, state="readonly")
         self.vehicle_choice.set("car")
         self.vehicle_choice.grid(row=2, column=1, sticky="w", padx=5)
 
-        # Unit toggle
-        self.unit_var = tk.BooleanVar()
-        self.unit_var.set(False)
+        self.unit_var = tk.BooleanVar(value=False)
         tk.Checkbutton(frm_input, text="Use Miles", variable=self.unit_var).grid(row=3, column=1, sticky="w", padx=5)
 
-        # Buttons
-        frm_btn = tk.Frame(self)
-        frm_btn.pack(pady=10)
-        tk.Button(frm_btn, text="Get Route", command=self.run_threaded, width=15, bg="#0078D7", fg="white").grid(row=0, column=0, padx=5)
-        tk.Button(frm_btn, text="Clear", command=self.clear_output, width=15, bg="#555", fg="white").grid(row=0, column=1, padx=5)
+        # Progress bar
+        self.progress = ttk.Progressbar(self, mode="indeterminate")
+        self.progress.pack(fill="x", padx=20, pady=5)
 
-        # Output area (scrollable)
-        self.output_frame = tk.Frame(self)
-        self.output_frame.pack(padx=10, pady=10, fill="both", expand=True)
+        tk.Button(self, text="Get Route", command=self.start_route_thread, width=20, bg="#0078D7", fg="white").pack(pady=10)
 
-        self.output_scroll = tk.Scrollbar(self.output_frame)
-        self.output_scroll.pack(side="right", fill="y")
+        # Output area
+        self.output_text = tk.Text(self, wrap="word", width=80, height=20, state="disabled", bg="#f9f9f9")
+        self.output_text.pack(padx=10, pady=10)
 
-        self.output_text = tk.Text(self.output_frame, wrap="word", width=90, height=25, state="disabled", bg="#f9f9f9", yscrollcommand=self.output_scroll.set)
-        self.output_text.pack(side="left", fill="both", expand=True)
-        self.output_scroll.config(command=self.output_text.yview)
+    # === Core Logic ===
 
-    def run_threaded(self):
-        threading.Thread(target=self.on_get_route, daemon=True).start()
+    def start_route_thread(self):
+        """Run route fetching in a separate thread (keeps UI responsive)."""
+        thread = threading.Thread(target=self.on_get_route)
+        thread.daemon = True
+        thread.start()
 
     def on_get_route(self):
+        """Main handler for getting and displaying a route."""
         start_loc = self.start_entry.get().strip()
         end_loc = self.end_entry.get().strip()
         vehicle = self.vehicle_choice.get()
@@ -142,62 +150,66 @@ class RouteApp(tk.Tk):
             messagebox.showerror("Input Error", "Please enter both starting and destination locations.")
             return
 
-        self.display_output("🛰 Geocoding locations...\n", clear=True)
+        self.progress.start()
+        self.display_output("\n--- Processing Route ---\n")
 
-        start_lat, start_lng, start_name, err1 = geocode(start_loc)
-        end_lat, end_lng, end_name, err2 = geocode(end_loc)
+        try:
+            # Step 1: Geocode
+            self.display_output("Geocoding locations...\n")
+            start_lat, start_lng, start_name, err1 = geocode(start_loc)
+            end_lat, end_lng, end_name, err2 = geocode(end_loc)
 
-        if err1:
-            messagebox.showerror("Error", err1)
-            return
-        if err2:
-            messagebox.showerror("Error", err2)
-            return
+            if err1:
+                messagebox.showerror("Geocoding Error", err1)
+                self.progress.stop()
+                return
+            if err2:
+                messagebox.showerror("Geocoding Error", err2)
+                self.progress.stop()
+                return
 
-        self.display_output(f"From: {start_name}\nTo: {end_name}\nVehicle: {vehicle}\n\nFetching route...\n")
+            self.display_output(f"From: {start_name}\nTo: {end_name}\nVehicle: {vehicle}\n")
 
-        result, error = get_route((start_lat, start_lng, start_name),
-                                  (end_lat, end_lng, end_name),
-                                  vehicle, use_miles)
+            # Step 2: Get Route
+            result, error = get_route(
+                (start_lat, start_lng, start_name),
+                (end_lat, end_lng, end_name),
+                vehicle,
+                use_miles
+            )
 
-        if error:
-            messagebox.showerror("Route Error", error)
-            return
+            if error:
+                messagebox.showerror("Route Error", error)
+                self.progress.stop()
+                return
 
-        summary, directions = result
-        self.display_output("=== ROUTE SUMMARY ===\n", color="blue")
-        self.display_output(summary + "\n\n", bold=True)
+            summary, directions = result
+            self.display_output("\n=== ROUTE SUMMARY ===\n" + summary + "\n\n=== DIRECTIONS ===\n")
+            for step in directions:
+                self.display_output(step + "\n")
 
-        # Google Maps link
-        gmap_url = f"https://www.google.com/maps/dir/{start_lat},{start_lng}/{end_lat},{end_lng}/"
-        self.display_output(f"🗺 Open in Google Maps: {gmap_url}\n\n", color="green")
+            logging.info("Route successfully fetched and displayed.")
+        except Exception as e:
+            logging.exception("Unexpected error occurred while getting route.")
+            messagebox.showerror("Unexpected Error", f"Something went wrong:\n\n{e}")
+        finally:
+            self.progress.stop()
+            self.display_output("\n--- Done ---\n")
 
-        self.display_output("=== DIRECTIONS ===\n", color="#444")
-        for step in directions:
-            self.display_output("• " + step + "\n")
-
-    def display_output(self, text, clear=False, bold=False, color=None):
+    def display_output(self, text):
+        """Append text to the output area."""
         self.output_text.config(state="normal")
-        if clear:
-            self.output_text.delete("1.0", tk.END)
-
-        tag = None
-        if bold:
-            tag = "bold"
-            self.output_text.tag_config("bold", font=("Arial", 10, "bold"))
-        elif color:
-            tag = color
-            self.output_text.tag_config(color, foreground=color)
-
-        self.output_text.insert(tk.END, text, tag)
+        self.output_text.insert(tk.END, text)
         self.output_text.see(tk.END)
         self.output_text.config(state="disabled")
 
-    def clear_output(self):
-        self.output_text.config(state="normal")
-        self.output_text.delete("1.0", tk.END)
-        self.output_text.config(state="disabled")
-
+# === Entry Point ===
 if __name__ == "__main__":
-    app = RouteApp()
-    app.mainloop()
+    try:
+        logging.info("Starting GraphHopper Route Planner...")
+        app = RouteApp()
+        app.mainloop()
+    except Exception as e:
+        logging.exception(f"Application crashed: {e}")
+    finally:
+        logging.info("Application closed.")
