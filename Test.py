@@ -10,7 +10,7 @@ API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"
 GEOCODE_URL = "https://graphhopper.com/api/1/geocode?"
 ROUTE_URL = "https://graphhopper.com/api/1/route?"
 
-# === Light Theme Color Scheme (matching reference design) ===
+# === Light Theme Color Scheme ===
 PRIMARY_COLOR = "#0066FF"
 PRIMARY_HOVER = "#0052CC"
 SUCCESS_COLOR = "#10B981"
