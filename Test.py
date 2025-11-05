@@ -1,6 +1,9 @@
 import streamlit as st
 import requests
 import urllib.parse
+import random
+import pandas as pd
+import polyline
 
 # === GraphHopper Configuration ===
 API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"
@@ -77,6 +80,7 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
         "vehicle": vehicle,
         "point": [f"{lat1},{lng1}", f"{lat2},{lng2}"],
         "instructions": "true"
+        "points_encoded": "true"
     }
 
     data = safe_request(ROUTE_URL, params)
@@ -109,6 +113,23 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
     st.write(f"*Distance:* {dist_text}")
     st.write(f"*Duration:* {time_text}")
 
+    # --- Map Display ---
+    st.subheader("🗺️ Route Map")
+    encoded_points = path.get("points")
+
+    if encoded_points and path.get("points_encoded", True):
+        try:
+            decoded_path = polyline.decode(encoded_points)
+            map_data = pd.DataFrame(decoded_path, columns=['lat', 'lon'])
+            st.map(map_data)
+        except Exception as e:
+            st.error(f"Error decoding map path: {e}")
+            map_data = pd.DataFrame({'lat': [lat1, lat2], 'lon': [lng1, lng2]})
+            st.map(map_data)
+    else:
+        map_data = pd.DataFrame({'lat': [lat1, lat2], 'lon': [lng1, lng2]})
+        st.map(map_data)
+
     # --- Directions ---
     st.subheader("🛣️ Directions")
     for i, inst in enumerate(path.get("instructions", []), 1):
@@ -117,6 +138,36 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
         step_dist = step_dist_m / (1000 if unit == "metric" else 1609.34)
         unit_symbol = "km" if unit == "metric" else "miles"
         st.markdown(f"*{i}.* {step} ({step_dist:.2f} {unit_symbol})")
+
+    # --- Road & Traffic Conditions ---
+    if vehicle in ["car", "bike"]:
+        st.divider()
+        st.header("🚦 Road & Traffic Conditions")
+        def simulate_road_conditions(instructions):
+            """Simulate random traffic or construction events."""
+            simulated = []
+            for inst in instructions:
+                condition = None
+                rand = random.random()
+                if rand < 0.15:
+                    condition = "🚧 Road Construction Ahead"
+                elif rand < 0.30:
+                    condition = "🚗 Heavy Traffic"
+                elif rand < 0.40:
+                    condition = "⏱️ Minor Delay"
+                if condition:
+                    simulated.append({
+                        "text": inst.get("text", ""),
+                        "condition": condition
+                    })
+            return simulated
+
+        conditions = simulate_road_conditions(path.get("instructions", []))
+        if conditions:
+            for c in conditions:
+                st.warning(f"{c['condition']} near *{c['text']}*")
+        else:
+            st.info("✅ No traffic or road construction reported along this route.")
 
     # --- POIs ---
     st.divider()
@@ -190,6 +241,9 @@ with st.sidebar:
         for i, s in enumerate(st.session_state.start_suggestions):
             st.button(s["display_name"], key=f"start_{i}", on_click=lambda s=s: set_location("start", s), use_container_width=True)
 
+    # --- Reverse Button ---
+    st. button("🔄 Reverse Start & Destination", on_click=reverse_locations, use_container_width=True)
+
     # Destination
     st.text_input("📍 Destination", key="dest_query_input", on_change=lambda: update_suggestions("dest"))
     if st.session_state.dest_suggestions:
@@ -197,6 +251,8 @@ with st.sidebar:
         for i, s in enumerate(st.session_state.dest_suggestions):
             st.button(s["display_name"], key=f"dest_{i}", on_click=lambda s=s: set_location("dest", s), use_container_width=True)
 
+    
+    st.divider()
     vehicle = st.selectbox("Vehicle Type", ["car", "bike", "foot"])
     unit = st.radio("Distance Unit", ["metric (km)", "imperial (mi)"], horizontal=True)
     col1, col2 = st.columns(2)
@@ -214,10 +270,13 @@ if calc_btn:
 
     if not start_point or not dest_point or not start_name or not dest_name:
         st.error("⚠️ Please search for and select both a start and destination.")
+        st.toast("Please select locations.", icon="⚠️")
     elif start_point == dest_point:
         st.error("⚠️ Start and destination cannot be the same.")
+        st.toast("Locations are the same.", icon="⚠️")
     else:
         with st.spinner("⏳ Calculating route..."):
             # Extract only the first word of the unit (for logic)
             unit_choice = "metric" if "metric" in unit else "imperial"
             calculate_route(start_point, dest_point, start_name, dest_name, vehicle, unit_choice)
+            st.toast("Roast calculated!", icon="✅")
