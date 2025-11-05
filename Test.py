@@ -3,9 +3,6 @@ import requests
 import urllib.parse
 
 # === GraphHopper Configuration ===
-# WARNING: This is a public demo key.
-# For a real application, replace this with your own private key
-# and store it securely (e.g., using st.secrets).
 API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"
 GEOCODE_URL = "https://graphhopper.com/api/1/geocode?"
 ROUTE_URL = "https://graphhopper.com/api/1/route?"
@@ -258,7 +255,6 @@ with st.sidebar:
         )
 
 # --- Main App Logic ---
-# REMOVE THE `if clear_btn:` block, as the on_click handles it now.
 
 if calc_btn:
     start_point = st.session_state.selected_start_point
