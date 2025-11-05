@@ -2,11 +2,13 @@ import tkinter as tk
 from tkinter import ttk
 import threading
 import requests
-import urllib.parse
 from typing import Optional, Tuple
+import traceback
 
 # === GraphHopper Configuration ===
-API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"
+# CRITICAL: Replace "YOUR_API_KEY" with a valid GraphHopper API key.
+# The code WILL NOT run successfully without a valid key.
+API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe" 
 GEOCODE_URL = "https://graphhopper.com/api/1/geocode?"
 ROUTE_URL = "https://graphhopper.com/api/1/route?"
 
@@ -23,7 +25,6 @@ INPUT_FG = "#1F2937"
 TEXT_PRIMARY = "#1F2937"
 TEXT_SECONDARY = "#6B7280"
 BORDER_COLOR = "#D1D5DB"
-ACCENT_GREEN = "#16A34A"
 ACCENT_RED = "#DC2626"
 
 # === Utility Functions ===
@@ -31,24 +32,34 @@ def safe_request(url: str, params: dict) -> Optional[dict]:
     """Wrapper to safely make HTTP requests and handle errors."""
     try:
         response = requests.get(url, params=params, timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print("API returned status:", response.status_code, "for", url)
+        
+        # Check for non-200 status codes, especially API Key errors
+        if response.status_code != 200:
+            error_data = response.json().get('message', f"HTTP Error {response.status_code}")
+            print(f"API Error for {url}: {error_data}")
+            
+            # Use root.after to display the error message on the GUI thread
+            root.after(0, lambda: show_error(f"API request failed: {error_data}", "API Error"))
             return None
+            
+        return response.json()
+        
     except requests.exceptions.Timeout:
-        print("Request timed out for", url)
+        root.after(0, lambda: show_error("The network request timed out.", "Network Timeout"))
     except requests.exceptions.ConnectionError:
-        print("Network error for", url)
+        root.after(0, lambda: show_error("A connection error occurred. Check your internet.", "Connection Error"))
     except Exception as e:
         print("Unexpected request error:", e)
+        root.after(0, lambda: show_error(f"An unexpected error occurred: {e}", "System Error"))
     return None
 
 
 def fetch_suggestions(entry_text: str, listbox: tk.Listbox) -> None:
-    """Fetch autocomplete suggestions from GraphHopper."""
+    """Fetch autocomplete suggestions from GraphHopper. Executed in a separate thread."""
     try:
-        listbox.delete(0, tk.END)
+        # Use root.after_idle to safely modify the listbox on the main GUI thread
+        root.after_idle(lambda: listbox.delete(0, tk.END))
+
         if entry_text.strip() == "" or len(entry_text.strip()) < 2:
             return
 
@@ -57,10 +68,15 @@ def fetch_suggestions(entry_text: str, listbox: tk.Listbox) -> None:
         if not data:
             return
 
+        suggestions = []
         for hit in data.get("hits", []):
             name = hit.get("name")
             if name:
-                listbox.insert(tk.END, name)
+                suggestions.append(name)
+        
+        # Safely insert suggestions into the Listbox on the main GUI thread
+        root.after_idle(lambda: [listbox.insert(tk.END, s) for s in suggestions])
+
     except Exception as e:
         print("Error fetching suggestions:", e)
 
@@ -68,7 +84,14 @@ def fetch_suggestions(entry_text: str, listbox: tk.Listbox) -> None:
 def on_select_suggestion(event: tk.Event, entry: tk.Entry, listbox: tk.Listbox, location_var: tk.StringVar) -> None:
     """When the user selects a suggestion"""
     try:
-        selection = listbox.get(listbox.curselection())
+        # Get the selected item text
+        selected_index = listbox.curselection()
+        if not selected_index:
+            return
+            
+        selection = listbox.get(selected_index[0])
+        
+        # Update the Entry and clear the Listbox
         entry.delete(0, tk.END)
         entry.insert(0, selection)
         listbox.delete(0, tk.END)
@@ -86,41 +109,39 @@ def geocode_location(location: str) -> Tuple[Optional[float], Optional[float], O
     try:
         lat = data["hits"][0]["point"]["lat"]
         lng = data["hits"][0]["point"]["lng"]
-        name = data["hits"][0].get("name", location)
+        name = data["hits"][0].get("name", location) 
         return lat, lng, name
     except (KeyError, TypeError):
         return None, None, None
 
 
 def show_error(message: str, title: str = "Error") -> None:
-    """Display error message in error panel"""
+    """Display error message in error panel (must be called via root.after or on GUI thread)"""
     error_panel.config(state="normal")
     error_panel.delete(1.0, tk.END)
-    error_panel.insert(tk.END, f"⚠️ {title}\n", "error_title")
+    error_panel.insert(tk.END, f"⚠️ {title}\n", "error_title") 
     error_panel.insert(tk.END, message, "error_text")
     error_panel.config(state="disabled")
-    # pack the error frame below the header_input (header_input exists after UI creation)
-    error_frame.pack(fill="x", pady=(0, 12), ipady=10, padx=12, after=header_input)
+    # pack the error frame below the header_input (header_input must be defined)
+    error_frame.pack(fill="x", pady=(0, 12), ipady=10, padx=20, after=header_input)
 
 
 def clear_error() -> None:
-    """Clear error panel"""
+    """Clear error panel (must be called via root.after or on GUI thread)"""
     error_panel.config(state="normal")
     error_panel.delete(1.0, tk.END)
     error_panel.config(state="disabled")
     error_frame.pack_forget()
 
 
-def calculate_route() -> None:
-    """Main route calculation (thread-safe GUI updates)"""
+def calculate_route_threaded() -> None:
+    """Starts the main route calculation in a separate thread."""
     start = start_var.get().strip()
     dest = dest_var.get().strip()
-    vehicle = vehicle_var.get()
-    unit = unit_var.get()
 
     clear_error()
 
-    # === Input Validation ===
+    # === Input Validation (on GUI thread for responsiveness) ===
     if not start or not dest:
         show_error("Please enter both start and destination locations.", "Invalid Input")
         return
@@ -134,106 +155,136 @@ def calculate_route() -> None:
         show_error("Invalid characters detected in location names.", "Invalid Input")
         return
 
+    # Update GUI state before starting the thread
     output_text.config(state="normal")
     output_text.delete(1.0, tk.END)
     output_text.config(state="disabled")
     status_label.config(text="⏳ Calculating route...", foreground=WARNING_COLOR)
     get_directions_btn.config(state="disabled")
 
-    def thread_task() -> None:
-        try:
-            lat1, lng1, name1 = geocode_location(start)
-            lat2, lng2, name2 = geocode_location(dest)
+    # Start the worker thread (the function is named _thread_task)
+    threading.Thread(target=_thread_task, daemon=True).start()
 
-            if lat1 is None or lat2 is None:
-                def show_geo_error():
-                    clear_error()
-                    show_error("One or both locations could not be resolved. Please check the names and try again.", "Geocoding Error")
-                    status_label.config(text="❌ Invalid or unknown location.", foreground=ERROR_COLOR)
-                    get_directions_btn.config(state="normal")
-                root.after(0, show_geo_error)
-                return
 
-            params = {
-                "key": API_KEY,
-                "vehicle": vehicle,
-                "point": [f"{lat1},{lng1}", f"{lat2},{lng2}"]
-            }
+def _thread_task() -> None:
+    """Worker thread function for API calls."""
+    start = start_var.get().strip()
+    dest = dest_var.get().strip()
+    vehicle = vehicle_var.get()
+    unit = unit_var.get()
 
-            data = safe_request(ROUTE_URL, params)
-            if not data or "paths" not in data or len(data["paths"]) == 0:
-                def show_route_error():
-                    clear_error()
-                    show_error("Unable to retrieve route data from the API. Please try again later.", "Routing Error")
-                    status_label.config(text="❌ Unable to retrieve route data.", foreground=ERROR_COLOR)
-                    get_directions_btn.config(state="normal")
-                root.after(0, show_route_error)
-                return
+    try:
+        # 1. Geocode Locations (Blocking API Calls)
+        lat1, lng1, name1 = geocode_location(start)
+        lat2, lng2, name2 = geocode_location(dest)
 
-            path = data["paths"][0]
-            dist_m = path.get("distance", 0)
-            time_ms = path.get("time", 0)
-
-            if unit == "metric":
-                dist = dist_m / 1000
-                dist_text = f"{dist:.1f} km"
-            else:
-                dist = dist_m / 1609.34
-                dist_text = f"{dist:.1f} miles"
-
-            sec = int(time_ms / 1000 % 60)
-            mins = int(time_ms / 1000 / 60 % 60)
-            hrs = int(time_ms / 1000 / 60 / 60)
-            time_text = f"{hrs:02d}:{mins:02d}:{sec:02d}"
-
-            instructions = []
-            for i, inst in enumerate(path.get("instructions", []) or [], 1):
-                step = inst.get("text", "")
-                step_dist_m = inst.get("distance", 0)
-                step_dist = step_dist_m / (1000 if unit == "metric" else 1609.34)
-                unit_symbol = "km" if unit == "metric" else "miles"
-                instructions.append(f"{i}. {step} ({step_dist:.2f} {unit_symbol})")
-
-            def update_ui():
+        if lat1 is None or lat2 is None:
+            # Schedule error update on the main thread
+            def show_geo_error():
                 clear_error()
-                status_label.config(text="✓ Route calculated successfully!", foreground=SUCCESS_COLOR)
-                output_text.config(state="normal")
-                output_text.delete(1.0, tk.END)
+                show_error("One or both locations could not be resolved. Please check the names and try again.", "Geocoding Error")
+                status_label.config(text="❌ Invalid or unknown location.", foreground=ERROR_COLOR)
+                get_directions_btn.config(state="normal")
+            root.after(0, show_geo_error)
+            return
 
-                output_text.insert(tk.END, "📍 ROUTE DETAILS\n", "header")
-                output_text.insert(tk.END, "━" * 55 + "\n\n")
-                output_text.insert(tk.END, f"From:    {name1}\n", "info")
-                output_text.insert(tk.END, f"To:      {name2}\n", "info")
-                output_text.insert(tk.END, f"Vehicle: {vehicle.upper()}\n\n", "info")
+        # 2. Route Calculation (Blocking API Call)
+        params = {
+            "key": API_KEY,
+            "vehicle": vehicle,
+            "point": [f"{lat1},{lng1}", f"{lat2},{lng2}"],
+            # Add instruction details for step-by-step directions
+            "instructions": "true",
+            "locale": "en" # Ensure instructions are in English
+        }
 
-                output_text.insert(tk.END, "📊 SUMMARY\n", "subheader")
-                output_text.insert(tk.END, "━" * 55 + "\n")
-                output_text.insert(tk.END, f"Distance:  {dist_text}\n", "summary")
-                output_text.insert(tk.END, f"Duration:  {time_text}\n\n", "summary")
+        data = safe_request(ROUTE_URL, params)
+        if not data or "paths" not in data or len(data["paths"]) == 0:
+            # Schedule error update on the main thread
+            def show_route_error():
+                clear_error()
+                show_error("Unable to retrieve route data from the API. Please try again later.", "Routing Error")
+                status_label.config(text="❌ Unable to retrieve route data.", foreground=ERROR_COLOR)
+                get_directions_btn.config(state="normal")
+            root.after(0, show_route_error)
+            return
 
-                output_text.insert(tk.END, "🛣️ DIRECTIONS\n", "subheader")
-                output_text.insert(tk.END, "━" * 55 + "\n")
+        # 3. Process Route Data
+        path = data["paths"][0]
+        dist_m = path.get("distance", 0)
+        time_ms = path.get("time", 0)
+
+        # Distance formatting
+        if unit == "metric":
+            dist = dist_m / 1000
+            dist_text = f"{dist:,.1f} km"
+            unit_symbol = "km"
+        else:
+            dist = dist_m / 1609.34
+            dist_text = f"{dist:,.1f} miles"
+            unit_symbol = "miles"
+
+        # Time formatting (HH:MM:SS)
+        sec = int(time_ms / 1000 % 60)
+        mins = int(time_ms / 1000 / 60 % 60)
+        hrs = int(time_ms / 1000 / 60 / 60)
+        time_text = f"{hrs:02d}:{mins:02d}:{sec:02d}"
+        
+        # Instructions formatting
+        instructions = []
+        for i, inst in enumerate(path.get("instructions", []) or [], 1):
+            step = inst.get("text", "")
+            step_dist_m = inst.get("distance", 0)
+            step_dist = step_dist_m / (1000 if unit == "metric" else 1609.34)
+            # Ensure distance formatting is locale-aware
+            instructions.append(f"{i}. {step} ({step_dist:,.2f} {unit_symbol})")
+
+
+        # 4. Update UI (Schedule on the main thread)
+        def update_ui():
+            clear_error()
+            status_label.config(text="✓ Route calculated successfully!", foreground=SUCCESS_COLOR)
+            output_text.config(state="normal")
+            output_text.delete(1.0, tk.END)
+
+            output_text.insert(tk.END, "📍 ROUTE DETAILS\n", "header")
+            output_text.insert(tk.END, "━" * 55 + "\n\n")
+            output_text.insert(tk.END, f"From:    {name1}\n", "info")
+            output_text.insert(tk.END, f"To:      {name2}\n", "info")
+            output_text.insert(tk.END, f"Vehicle: {vehicle.upper()}\n\n", "info")
+
+            output_text.insert(tk.END, "📊 SUMMARY\n", "subheader")
+            output_text.insert(tk.END, "━" * 55 + "\n")
+            output_text.insert(tk.END, f"Distance:  {dist_text}\n", "summary")
+            output_text.insert(tk.END, f"Duration:  {time_text}\n\n", "summary")
+
+            output_text.insert(tk.END, "🛣️ DIRECTIONS\n", "subheader")
+            output_text.insert(tk.END, "━" * 55 + "\n")
+            if not instructions:
+                 output_text.insert(tk.END, "No detailed instructions available for this route.", "instruction")
+            else:
                 for line in instructions:
                     output_text.insert(tk.END, line + "\n", "instruction")
 
-                output_text.config(state="disabled")
-                get_directions_btn.config(state="normal")
+            output_text.config(state="disabled")
+            get_directions_btn.config(state="normal")
 
-            root.after(0, update_ui)
+        root.after(0, update_ui)
 
-        except Exception as e:
-            def show_unexpected():
-                clear_error()
-                show_error(f"Unexpected error occurred: {e}", "Error")
-                status_label.config(text="❌ Unexpected error occurred.", foreground=ERROR_COLOR)
-                get_directions_btn.config(state="normal")
-            root.after(0, show_unexpected)
-
-    threading.Thread(target=thread_task, daemon=True).start()
+    except Exception as e:
+        # Schedule unexpected error update on the main thread
+        def show_unexpected():
+            clear_error()
+            # print the actual error to the console for debugging
+            traceback.print_exc()
+            show_error(f"An unexpected error occurred. Check the console for details.", "System Error")
+            status_label.config(text="❌ Unexpected error occurred.", foreground=ERROR_COLOR)
+            get_directions_btn.config(state="normal")
+        root.after(0, show_unexpected)
 
 
 def clear_all() -> None:
-    """Clear all input and output"""
+    """Clear all input and output (must be called on GUI thread)"""
     start_entry.delete(0, tk.END)
     dest_entry.delete(0, tk.END)
     start_suggestions.delete(0, tk.END)
@@ -258,8 +309,9 @@ root.resizable(True, True)
 style = ttk.Style()
 style.theme_use('clam')
 
+# === Style Configuration ===
 style.configure("TLabel", background=BG_COLOR, foreground=TEXT_PRIMARY, font=("Segoe UI", 10))
-style.configure("Title.TLabel", background=PANEL_COLOR, foreground=TEXT_PRIMARY, font=("Segoe UI", 20, "bold"))
+style.configure("Title.TLabel", background=PANEL_COLOR, foreground=PRIMARY_COLOR, font=("Segoe UI", 20, "bold"))
 style.configure("Subtitle.TLabel", background=BG_COLOR, foreground=TEXT_SECONDARY, font=("Segoe UI", 11))
 style.configure("Heading.TLabel", background=PANEL_COLOR, foreground=TEXT_PRIMARY, font=("Segoe UI", 12, "bold"))
 style.configure("Panel.TLabel", background=PANEL_COLOR, foreground=TEXT_PRIMARY, font=("Segoe UI", 10))
@@ -268,29 +320,29 @@ style.configure("Panel.TLabel", background=PANEL_COLOR, foreground=TEXT_PRIMARY,
 style.configure("TEntry", fieldbackground=INPUT_BG, foreground=INPUT_FG, font=("Segoe UI", 11), 
                 borderwidth=1, relief="solid", padding=6)
 style.map("TEntry", 
-         fieldbackground=[("focus", INPUT_BG)],
-         borderwidth=[("focus", 2)],
-         relief=[("focus", "solid")])
+          fieldbackground=[("focus", INPUT_BG)],
+          borderwidth=[("focus", 2)],
+          relief=[("focus", "solid")])
 
 # Combobox styling
 style.configure("TCombobox", fieldbackground=INPUT_BG, foreground=INPUT_FG, font=("Segoe UI", 11),
-               borderwidth=1, relief="solid", padding=4)
+                borderwidth=1, relief="solid", padding=4)
 style.map("TCombobox",
-         fieldbackground=[("focus", INPUT_BG)])
+          fieldbackground=[("focus", INPUT_BG)])
 
 # Button styling - blue primary button
 style.configure("TButton", background=PRIMARY_COLOR, foreground=PANEL_COLOR, font=("Segoe UI", 11, "bold"),
-               borderwidth=0, relief="flat", padding=10)
+                borderwidth=0, relief="flat", padding=10)
 style.map("TButton",
-         background=[("active", PRIMARY_HOVER), ("disabled", BORDER_COLOR)],
-         foreground=[("disabled", TEXT_SECONDARY)])
+          background=[("active", PRIMARY_HOVER), ("disabled", BORDER_COLOR)],
+          foreground=[("disabled", TEXT_SECONDARY)])
 
 # Secondary button - outline style
 style.configure("Secondary.TButton", background=PANEL_COLOR, foreground=TEXT_PRIMARY, font=("Segoe UI", 11, "bold"),
-               borderwidth=1, relief="solid", padding=10)
+                borderwidth=1, relief="solid", padding=10)
 style.map("Secondary.TButton",
-         background=[("active", "#F3F4F6"), ("disabled", "#F9FAFB")],
-         relief=[("active", "solid")])
+          background=[("active", "#F3F4F6"), ("disabled", "#F9FAFB")],
+          relief=[("active", "solid")])
 
 style.configure("TRadiobutton", background=PANEL_COLOR, foreground=TEXT_PRIMARY, font=("Segoe UI", 11))
 style.configure("Panel.TFrame", background=PANEL_COLOR, relief="flat")
@@ -318,9 +370,10 @@ ttk.Label(header_input, text="Find the best route to your destination", style="S
 
 # Error panel
 error_frame = ttk.Frame(left_panel, style="Panel.TFrame")
+# The error panel definition must be here, but it is packed dynamically in show_error()
 error_panel = tk.Text(error_frame, height=3, wrap="word", bg="#FEE2E2", fg=ERROR_COLOR, 
                       bd=1, relief="solid", font=("Segoe UI", 9), state="disabled", padx=8, pady=6)
-error_panel.pack(fill="x", padx=20, pady=(0, 12))
+error_panel.pack(fill="x")
 error_panel.tag_config("error_title", font=("Segoe UI", 9, "bold"), foreground=ERROR_COLOR)
 error_panel.tag_config("error_text", foreground=ERROR_COLOR)
 
@@ -361,14 +414,15 @@ unit_label.pack(anchor="w", pady=(0, 8))
 units_frame = ttk.Frame(input_container, style="Panel.TFrame")
 units_frame.pack(anchor="w", pady=(0, 20))
 ttk.Radiobutton(units_frame, text="Kilometers", variable=unit_var, value="metric", 
-               style="TRadiobutton").pack(anchor="w", pady=(0, 6))
+                style="TRadiobutton").pack(anchor="w", pady=(0, 6))
 ttk.Radiobutton(units_frame, text="Miles", variable=unit_var, value="imperial", 
-               style="TRadiobutton").pack(anchor="w")
+                style="TRadiobutton").pack(anchor="w")
 
 # Buttons
 buttons_frame = ttk.Frame(input_container, style="Panel.TFrame")
 buttons_frame.pack(fill="x")
-get_directions_btn = ttk.Button(buttons_frame, text="Get Directions", command=calculate_route, style="TButton")
+# Corrected the command function reference to the threaded wrapper
+get_directions_btn = ttk.Button(buttons_frame, text="Get Directions", command=calculate_route_threaded, style="TButton")
 get_directions_btn.pack(fill="x", pady=(0, 8))
 clear_btn = ttk.Button(buttons_frame, text="Clear", command=clear_all, style="Secondary.TButton")
 clear_btn.pack(fill="x")
@@ -381,8 +435,8 @@ output_scroll = ttk.Scrollbar(right_panel)
 output_scroll.pack(side="right", fill="y")
 
 output_text = tk.Text(right_panel, wrap="word", yscrollcommand=output_scroll.set, 
-                     bg=PANEL_COLOR, fg=TEXT_PRIMARY, bd=0, relief="flat", 
-                     font=("Segoe UI", 11), state="normal", padx=24, pady=24)
+                      bg=PANEL_COLOR, fg=TEXT_PRIMARY, bd=0, relief="flat", 
+                      font=("Segoe UI", 11), state="normal", padx=24, pady=24)
 output_text.pack(fill="both", expand=True)
 output_text.insert(tk.END, "Enter locations and get directions", "placeholder")
 output_text.config(state="disabled")
@@ -402,8 +456,17 @@ status_label.pack(fill="x", padx=20, pady=(0, 12))
 
 # Bindings for suggestions
 def _start_fetch_suggestions(event, entry_widget, listbox_widget):
+    """Event handler to start suggestion fetching in a thread."""
     text = entry_widget.get()
-    threading.Thread(target=fetch_suggestions, args=(text, listbox_widget), daemon=True).start()
+    
+    # Simple key press filter to avoid unnecessary thread starts on modifier keys
+    if event.keysym in ("Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Caps_Lock", "Return", "BackSpace"):
+        return
+
+    # Using a simple check to prevent excessive thread creation on every key release
+    if text.strip() != getattr(entry_widget, '_last_suggestion_text', None):
+        setattr(entry_widget, '_last_suggestion_text', text.strip())
+        threading.Thread(target=fetch_suggestions, args=(text, listbox_widget), daemon=True).start()
 
 start_entry.bind("<KeyRelease>", lambda e: _start_fetch_suggestions(e, start_entry, start_suggestions))
 dest_entry.bind("<KeyRelease>", lambda e: _start_fetch_suggestions(e, dest_entry, dest_suggestions))
@@ -411,4 +474,5 @@ dest_entry.bind("<KeyRelease>", lambda e: _start_fetch_suggestions(e, dest_entry
 start_suggestions.bind("<<ListboxSelect>>", lambda e: on_select_suggestion(e, start_entry, start_suggestions, start_var))
 dest_suggestions.bind("<<ListboxSelect>>", lambda e: on_select_suggestion(e, dest_entry, dest_suggestions, dest_var))
 
-root.mainloop()
+if __name__ == '__main__':
+    root.mainloop()
