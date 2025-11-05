@@ -25,4 +25,8 @@ collaborative software development.
 - Error handling()
 - Input Validation
 - Nearby Restaurants
+========
+- Map and Path
+- Road & Traffic Conditions
+- Tabs
 
