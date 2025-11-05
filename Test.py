@@ -3,18 +3,16 @@ import requests
 import urllib.parse
 
 # === GraphHopper Configuration ===
-# WARNING: This is a public demo key.
-# For a real application, replace this with your own private key
-# and store it securely (e.g., using st.secrets).
 API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"
 GEOCODE_URL = "https://graphhopper.com/api/1/geocode?"
 ROUTE_URL = "https://graphhopper.com/api/1/route?"
+OSM_SEARCH_URL = "https://nominatim.openstreetmap.org/search?"
 
 # === Utility Functions ===
 def safe_request(url: str, params: dict):
-    """Wrapper to safely make HTTP requests and handle errors."""
+    """Safely make HTTP requests with error handling."""
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, timeout=10, headers={"User-Agent": "RoutePlannerApp"})
         if response.status_code == 200:
             return response.json()
         else:
@@ -24,41 +22,53 @@ def safe_request(url: str, params: dict):
         st.error(f"Request error: {e}")
         return None
 
+# === Location Suggestion Functions ===
 def get_geocode_suggestions(query: str):
-    """Fetches a list of geocode hits (suggestions)."""
-    # Don't search for empty or very short strings
     if not query or len(query.strip()) < 3:
         return []
-        
     params = {"q": query, "limit": 5, "key": API_KEY}
     data = safe_request(GEOCODE_URL, params)
-    
-    if not data or "hits" not in data or len(data["hits"]) == 0:
+    if not data or "hits" not in data:
         return []
-    
-    # Format for display and store the lat/lng point
     suggestions = []
     for hit in data["hits"]:
-        # Build a descriptive name
         name = hit.get("name", "")
         state = hit.get("state", "")
         country = hit.get("country", "")
-        
-        # Join the parts that actually exist
-        parts = [name, state, country]
-        display_name = ", ".join(p for p in parts if p)
-        
-        # Include the point (lat/lng) for route calculation
+        display_name = ", ".join(p for p in [name, state, country] if p)
         if "point" in hit:
             suggestions.append({
                 "display_name": display_name,
-                "point": hit["point"] 
+                "point": hit["point"]
             })
     return suggestions
 
+# === POI Search ===
+def search_poi(lat, lng, keyword, radius_km=3):
+    """Search nearby POIs using OpenStreetMap Nominatim."""
+    deg = radius_km / 111  # km → degrees
+    params = {
+        "q": keyword,
+        "format": "json",
+        "limit": 10,
+        "bounded": 1,
+        "viewbox": f"{lng - deg},{lat + deg},{lng + deg},{lat - deg}",
+    }
+    return safe_request(OSM_SEARCH_URL, params)
+
+def display_poi_results(title, results):
+    st.subheader(title)
+    if not results:
+        st.info("No locations found.")
+        return
+    for place in results:
+        name = place.get("display_name", "Unknown")
+        lat = place.get("lat", "")
+        lon = place.get("lon", "")
+        st.markdown(f"- **{name}**  \n  📍 Lat: {lat}, Lng: {lon}")
+
+# === Route Calculation ===
 def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, unit):
-    """Perform route calculation using lat/lng points."""
-    
     lat1, lng1 = start_point['lat'], start_point['lng']
     lat2, lng2 = dest_point['lat'], dest_point['lng']
 
@@ -66,8 +76,7 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
         "key": API_KEY,
         "vehicle": vehicle,
         "point": [f"{lat1},{lng1}", f"{lat2},{lng2}"],
-        "instructions": "true",
-        "calc_points": "false", # We don't need the full geometry
+        "instructions": "true"
     }
 
     data = safe_request(ROUTE_URL, params)
@@ -79,7 +88,6 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
     dist_m = path.get("distance", 0)
     time_ms = path.get("time", 0)
 
-    # Unit conversion
     if unit == "metric":
         dist = dist_m / 1000
         dist_text = f"{dist:.1f} km"
@@ -87,13 +95,12 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
         dist = dist_m / 1609.34
         dist_text = f"{dist:.1f} miles"
 
-    # Time conversion
-    sec = int(time_ms / 1000 % 60)
-    mins = int(time_ms / 1000 / 60 % 60)
     hrs = int(time_ms / 1000 / 60 / 60)
+    mins = int(time_ms / 1000 / 60 % 60)
+    sec = int(time_ms / 1000 % 60)
     time_text = f"{hrs:02d}:{mins:02d}:{sec:02d}"
 
-    # Display Route Summary
+    # --- Display Summary ---
     st.success("✅ Route calculated successfully!")
     st.subheader("📊 Summary")
     st.write(f"**From:** {start_name}")
@@ -102,176 +109,115 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
     st.write(f"**Distance:** {dist_text}")
     st.write(f"**Duration:** {time_text}")
 
-    # Directions
+    # --- Directions ---
     st.subheader("🛣️ Directions")
-    instructions = path.get("instructions", [])
-    if not instructions:
-        st.write("No turn-by-turn directions available for this route.")
-        return
-
-    for i, inst in enumerate(instructions, 1):
+    for i, inst in enumerate(path.get("instructions", []), 1):
         step = inst.get("text", "")
         step_dist_m = inst.get("distance", 0)
-        
-        # Convert step distance
-        if unit == "metric":
-            step_dist = step_dist_m / 1000
-            unit_symbol = "km"
-        else:
-            step_dist = step_dist_m / 1609.34
-            unit_symbol = "miles"
-            
+        step_dist = step_dist_m / (1000 if unit == "metric" else 1609.34)
+        unit_symbol = "km" if unit == "metric" else "miles"
         st.markdown(f"**{i}.** {step} ({step_dist:.2f} {unit_symbol})")
 
-# === Callbacks for Suggestions ===
-def update_start_suggestions():
-    """Callback to update start suggestions based on text input."""
-    query = st.session_state.get("start_query_input", "")
-    st.session_state.start_suggestions = get_geocode_suggestions(query)
-    # Clear selected point if the user types a new query
-    st.session_state.selected_start_point = None
+    # --- POIs ---
+    st.divider()
+    st.header("🍽️ Nearby Places")
 
-def update_dest_suggestions():
-    """Callback to update destination suggestions based on text input."""
-    query = st.session_state.get("dest_query_input", "")
-    st.session_state.dest_suggestions = get_geocode_suggestions(query)
-    # Clear selected point if the user types a new query
-    st.session_state.selected_dest_point = None
+    midpoint_lat = (lat1 + lat2) / 2
+    midpoint_lng = (lng1 + lng2) / 2
 
-# === Callbacks for Suggestion Selection ===
-def set_start_location(suggestion):
-    """Callback to set the selected start location."""
-    st.session_state.selected_start_point = suggestion['point']
-    # Update the text box to show the selected name
-    st.session_state.start_query_input = suggestion['display_name'] 
-    # Store the selected name for the summary
-    st.session_state.start_select = suggestion['display_name']
-    # Clear suggestions now that one is selected
-    st.session_state.start_suggestions = [] 
+    # Always show restaurants
+    display_poi_results("🍔 Restaurants near START", search_poi(lat1, lng1, "restaurant"))
+    display_poi_results("🍔 Restaurants MID-ROUTE", search_poi(midpoint_lat, midpoint_lng, "restaurant"))
+    display_poi_results("🍔 Restaurants near DESTINATION", search_poi(lat2, lng2, "restaurant"))
 
-def set_dest_location(suggestion):
-    """Callback to set the selected destination."""
-    st.session_state.selected_dest_point = suggestion['point']
-    # Update the text box to show the selected name
-    st.session_state.dest_query_input = suggestion['display_name']
-    # Store the selected name for the summary
-    st.session_state.dest_select = suggestion['display_name']
-    # Clear suggestions now that one is selected
-    st.session_state.dest_suggestions = []
+    # Only show gas stations for cars
+    if vehicle == "car":
+        st.divider()
+        st.header("⛽ Gas Stations Nearby")
+        display_poi_results("⛽ Gas Stations near START", search_poi(lat1, lng1, "fuel"))
+        display_poi_results("⛽ Gas Stations MID-ROUTE", search_poi(midpoint_lat, midpoint_lng, "fuel"))
+        display_poi_results("⛽ Gas Stations near DESTINATION", search_poi(lat2, lng2, "fuel"))
 
-def clear_all():
-    """Callback to clear all session state values."""
-    st.session_state.start_suggestions = []
-    st.session_state.dest_suggestions = []
-    st.session_state.selected_start_point = None
-    st.session_state.selected_dest_point = None
-    st.session_state.start_query_input = ""
-    st.session_state.dest_query_input = ""
-    st.session_state.start_select = ""
-    st.session_state.dest_select = ""
-
-# === Streamlit UI ===
+# === Streamlit UI Setup ===
 st.set_page_config(page_title="Route Planner", layout="wide")
 
-# Initialize session state
-if 'start_suggestions' not in st.session_state:
-    st.session_state.start_suggestions = []
-if 'dest_suggestions' not in st.session_state:
-    st.session_state.dest_suggestions = []
-if 'selected_start_point' not in st.session_state:
-    st.session_state.selected_start_point = None
-if 'selected_dest_point' not in st.session_state:
-    st.session_state.selected_dest_point = None
-# Keys for widgets to persist their state
-if 'start_query_input' not in st.session_state:
-    st.session_state.start_query_input = ""
-if 'dest_query_input' not in st.session_state:
-    st.session_state.dest_query_input = ""
-# Store the selected display names
-if 'start_select' not in st.session_state:
-    st.session_state.start_select = ""
-if 'dest_select' not in st.session_state:
-    st.session_state.dest_select = ""
+# --- Hide Streamlit Deploy / Menu Buttons ---
+hide_st_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+"""
+st.markdown(hide_st_style, unsafe_allow_html=True)
 
 st.title("🗺️ Route Planner")
-st.caption("Find the best route to your destination")
+st.caption("Find the best route with nearby restaurants and gas stations.")
 
+# Initialize session state
+for key in [
+    "start_suggestions", "dest_suggestions", "selected_start_point",
+    "selected_dest_point", "start_query_input", "dest_query_input",
+    "start_select", "dest_select"
+]:
+    if key not in st.session_state:
+        st.session_state[key] = [] if "suggestions" in key else None if "point" in key else ""
+
+# === Helper Callbacks ===
+def update_suggestions(mode):
+    query = st.session_state.get(f"{mode}_query_input", "")
+    st.session_state[f"{mode}_suggestions"] = get_geocode_suggestions(query)
+    st.session_state[f"selected_{mode}_point"] = None
+
+def set_location(mode, suggestion):
+    st.session_state[f"selected_{mode}_point"] = suggestion["point"]
+    st.session_state[f"{mode}_query_input"] = suggestion["display_name"]
+    st.session_state[f"{mode}_select"] = suggestion["display_name"]
+    st.session_state[f"{mode}_suggestions"] = []
+
+def clear_all():
+    for key in st.session_state.keys():
+        st.session_state[key] = [] if "suggestions" in key else None if "point" in key else ""
+
+# === Sidebar Inputs ===
 with st.sidebar:
     st.header("Inputs")
-    
-    # --- Start Location ---
-    st.text_input(
-        "📍 Start Location", 
-        key="start_query_input", 
-        on_change=update_start_suggestions,
-        help="Type 3+ characters and press Enter to see suggestions."
-    )
 
-    # Show suggestions as clickable buttons
+    # Start
+    st.text_input("📍 Start Location", key="start_query_input", on_change=lambda: update_suggestions("start"))
     if st.session_state.start_suggestions:
         st.write("Suggestions:")
-        # Add enumerate to get a unique index 'i'
         for i, s in enumerate(st.session_state.start_suggestions):
-            st.button(
-                s['display_name'], 
-                # Add the index 'i' to the key to make it unique
-                key=f"start_sug_{i}_{s['display_name']}",
-                on_click=set_start_location, 
-                args=(s,),
-                use_container_width=True
-            )
-    
-    # --- Destination ---
-    st.text_input(
-        "📍 Destination", 
-        key="dest_query_input", 
-        on_change=update_dest_suggestions,
-        help="Type 3+ characters and press Enter to see suggestions."
-    )
+            st.button(s["display_name"], key=f"start_{i}", on_click=lambda s=s: set_location("start", s), use_container_width=True)
 
-    # Show suggestions as clickable buttons
+    # Destination
+    st.text_input("📍 Destination", key="dest_query_input", on_change=lambda: update_suggestions("dest"))
     if st.session_state.dest_suggestions:
         st.write("Suggestions:")
-        # Add enumerate to get a unique index 'i'
         for i, s in enumerate(st.session_state.dest_suggestions):
-            st.button(
-                s['display_name'], 
-                # Add the index 'i' to the key to make it unique
-                key=f"dest_sug_{i}_{s['display_name']}",
-                on_click=set_dest_location, 
-                args=(s,),
-                use_container_width=True
-            )
+            st.button(s["display_name"], key=f"dest_{i}", on_click=lambda s=s: set_location("dest", s), use_container_width=True)
 
-    # --- Other Inputs ---
-    vehicle = st.selectbox("Vehicle Type", ("car", "bike", "foot"))
-    unit = st.radio("Distance Unit", ("metric", "imperial"), horizontal=True)
-    
+    vehicle = st.selectbox("Vehicle Type", ["car", "bike", "foot"])
+    unit = st.radio("Distance Unit", ["metric (km)", "imperial (mi)"], horizontal=True)
     col1, col2 = st.columns(2)
     with col1:
         calc_btn = st.button("Get Directions", type="primary", use_container_width=True)
     with col2:
-        clear_btn = st.button(
-            "Clear", 
-            use_container_width=True,
-            on_click=clear_all  # Use the on_click callback
-        )
+        clear_btn = st.button("Clear", use_container_width=True, on_click=lambda: clear_all())
 
-# --- Main App Logic ---
-# REMOVE THE `if clear_btn:` block, as the on_click handles it now.
-
+# === Main Logic ===
 if calc_btn:
     start_point = st.session_state.selected_start_point
     dest_point = st.session_state.selected_dest_point
-    
-    # Get the selected display names from the selectbox keys
-    start_name = st.session_state.get("start_select")
-    dest_name = st.session_state.get("dest_select")
+    start_name = st.session_state.start_select
+    dest_name = st.session_state.dest_select
 
     if not start_point or not dest_point or not start_name or not dest_name:
         st.error("⚠️ Please search for and select both a start and destination.")
-    elif start_point['lat'] == dest_point['lat'] and start_point['lng'] == dest_point['lng']:
-         st.error("⚠️ Start and destination cannot be the same.")
+    elif start_point == dest_point:
+        st.error("⚠️ Start and destination cannot be the same.")
     else:
         with st.spinner("⏳ Calculating route..."):
-            calculate_route(start_point, dest_point, start_name, dest_name, vehicle, unit)
+            # Extract only the first word of the unit (for logic)
+            unit_choice = "metric" if "metric" in unit else "imperial"
+            calculate_route(start_point, dest_point, start_name, dest_name, vehicle, unit_choice)
