@@ -103,11 +103,11 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
     # --- Display Summary ---
     st.success("✅ Route calculated successfully!")
     st.subheader("📊 Summary")
-    st.write(f"**From:** {start_name}")
-    st.write(f"**To:** {dest_name}")
-    st.write(f"**Vehicle:** {vehicle.capitalize()}")
-    st.write(f"**Distance:** {dist_text}")
-    st.write(f"**Duration:** {time_text}")
+    st.write(f"*From:* {start_name}")
+    st.write(f"*To:* {dest_name}")
+    st.write(f"*Vehicle:* {vehicle.capitalize()}")
+    st.write(f"*Distance:* {dist_text}")
+    st.write(f"*Duration:* {time_text}")
 
     # --- Directions ---
     st.subheader("🛣️ Directions")
