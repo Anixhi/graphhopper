@@ -65,7 +65,7 @@ def display_poi_results(title, results):
         name = place.get("display_name", "Unknown")
         lat = place.get("lat", "")
         lon = place.get("lon", "")
-        st.markdown(f"- *{name}*  \n  📍 Lat: {lat}, Lng: {lon}")
+        st.markdown(f"- **{name}**  \n  📍 Lat: {lat}, Lng: {lon}")
 
 # === Route Calculation ===
 def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, unit):
@@ -116,7 +116,7 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
         step_dist_m = inst.get("distance", 0)
         step_dist = step_dist_m / (1000 if unit == "metric" else 1609.34)
         unit_symbol = "km" if unit == "metric" else "miles"
-        st.markdown(f"*{i}.* {step} ({step_dist:.2f} {unit_symbol})")
+        st.markdown(f"**{i}.** {step} ({step_dist:.2f} {unit_symbol})")
 
     # --- POIs ---
     st.divider()
@@ -221,4 +221,3 @@ if calc_btn:
             # Extract only the first word of the unit (for logic)
             unit_choice = "metric" if "metric" in unit else "imperial"
             calculate_route(start_point, dest_point, start_name, dest_name, vehicle, unit_choice)
-graphhopper.com
