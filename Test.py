@@ -59,8 +59,7 @@ def search_poi(lat, lng, keyword, radius_km=3):
     }
     return safe_request(OSM_SEARCH_URL, params)
 
-def display_poi_results(title, results):
-    st.subheader(title)
+def display_poi_results(results):
     if not results:
         st.info("No locations found.")
         return
@@ -68,7 +67,7 @@ def display_poi_results(title, results):
         name = place.get("display_name", "Unknown")
         lat = place.get("lat", "")
         lon = place.get("lon", "")
-        st.markdown(f"- *{name}*  \n  📍 Lat: {lat}, Lng: {lon}")
+        st.markdown(f"- **{name}** \n 📍 Lat: {lat}, Lng: {lon}")
 
 # === Route Calculation ===
 def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, unit):
@@ -82,7 +81,6 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
         "instructions": "true"
         "points_encoded": "true"
     }
-
     data = safe_request(ROUTE_URL, params)
     if not data or "paths" not in data or len(data["paths"]) == 0:
         st.error("❌ Unable to retrieve route data.")
@@ -104,8 +102,9 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
     sec = int(time_ms / 1000 % 60)
     time_text = f"{hrs:02d}:{mins:02d}:{sec:02d}"
 
-    # --- Display Summary ---
+    # --- Tabs ---
     st.success("✅ Route calculated successfully!")
+    Jen
     st.subheader("📊 Summary")
     st.write(f"*From:* {start_name}")
     st.write(f"*To:* {dest_name}")
@@ -183,11 +182,84 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
 
     # Only show gas stations for cars
     if vehicle == "car":
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 Summary & Directions",
+        "🚧 Road Traffic Conditions",
+        "🍽️ Nearby Restaurants",
+        "⛽ Nearby Gas Stations"
+    ])
+
+    # --- Summary & Directions Tab ---
+    with tab1:
+        st.subheader("📊 Summary")
+        st.write(f"*From:* {start_name}")
+        st.write(f"*To:* {dest_name}")
+        st.write(f"*Vehicle:* {vehicle.capitalize()}")
+        st.write(f"*Distance:* {dist_text}")
+        st.write(f"*Duration:* {time_text}")
+ main
         st.divider()
-        st.header("⛽ Gas Stations Nearby")
-        display_poi_results("⛽ Gas Stations near START", search_poi(lat1, lng1, "fuel"))
-        display_poi_results("⛽ Gas Stations MID-ROUTE", search_poi(midpoint_lat, midpoint_lng, "fuel"))
-        display_poi_results("⛽ Gas Stations near DESTINATION", search_poi(lat2, lng2, "fuel"))
+        st.subheader("🛣️ Directions")
+        for i, inst in enumerate(path.get("instructions", []), 1):
+            step = inst.get("text", "")
+            step_dist_m = inst.get("distance", 0)
+            step_dist = step_dist_m / (1000 if unit == "metric" else 1609.34)
+            unit_symbol = "km" if unit == "metric" else "miles"
+            st.markdown(f"**{i}.** {step} ({step_dist:.2f} {unit_symbol})")
+
+    # --- Road Traffic Conditions Tab ---
+    with tab2:
+        if vehicle in ["car", "bike"]:
+            st.subheader("🚧 Road & Traffic Conditions")
+
+            def simulate_road_conditions(instructions):
+                simulated = []
+                for inst in instructions:
+                    condition = None
+                    rand = random.random()
+                    if rand < 0.15:
+                        condition = "🚧 Road Construction Ahead"
+                    elif rand < 0.30:
+                        condition = "🚗 Heavy Traffic"
+                    elif rand < 0.40:
+                        condition = "⚠️ Minor Delay"
+                    if condition:
+                        simulated.append({
+                            "text": inst.get("text", ""),
+                            "condition": condition
+                        })
+                return simulated
+
+            conditions = simulate_road_conditions(path.get("instructions", []))
+            if conditions:
+                for c in conditions:
+                    st.warning(f"{c['condition']} near **{c['text']}**")
+            else:
+                st.info("✅ No traffic or road construction reported along this route.")
+        else:
+            st.info("🚶 Road and traffic conditions are only available for cars and bikes.")
+
+    # --- Nearby Restaurants Tab ---
+    with tab3:
+        st.subheader("🍔 Nearby Restaurants")
+        midpoint_lat = (lat1 + lat2) / 2
+        midpoint_lng = (lng1 + lng2) / 2
+        display_poi_results(search_poi(lat1, lng1, "restaurant"))
+        display_poi_results(search_poi(midpoint_lat, midpoint_lng, "restaurant"))
+        display_poi_results(search_poi(lat2, lng2, "restaurant"))
+
+    # --- Nearby Gas Stations Tab ---
+    with tab4:
+        if vehicle == "car":
+            st.subheader("⛽ Gas Stations Nearby")
+            midpoint_lat = (lat1 + lat2) / 2
+            midpoint_lng = (lng1 + lng2) / 2
+            display_poi_results(search_poi(lat1, lng1, "fuel"))
+            display_poi_results(search_poi(midpoint_lat, midpoint_lng, "fuel"))
+            display_poi_results(search_poi(lat2, lng2, "fuel"))
+        else:
+            st.info("⛽ Gas station info is only available for cars.")
 
 # === Streamlit UI Setup ===
 st.set_page_config(page_title="Route Planner", layout="wide")
@@ -203,12 +275,13 @@ hide_st_style = """
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
 st.title("🗺️ Route Planner")
-st.caption("Find the best route with nearby restaurants and gas stations.")
+st.caption("Find the best route with nearby restaurants, gas stations, and traffic updates.")
 
 # Initialize session state
 for key in [
-    "start_suggestions", "dest_suggestions", "selected_start_point",
-    "selected_dest_point", "start_query_input", "dest_query_input",
+    "start_suggestions", "dest_suggestions",
+    "selected_start_point", "selected_dest_point",
+    "start_query_input", "dest_query_input",
     "start_select", "dest_select"
 ]:
     if key not in st.session_state:
@@ -255,6 +328,7 @@ with st.sidebar:
     st.divider()
     vehicle = st.selectbox("Vehicle Type", ["car", "bike", "foot"])
     unit = st.radio("Distance Unit", ["metric (km)", "imperial (mi)"], horizontal=True)
+
     col1, col2 = st.columns(2)
     with col1:
         calc_btn = st.button("Get Directions", type="primary", use_container_width=True)
@@ -276,7 +350,7 @@ if calc_btn:
         st.toast("Locations are the same.", icon="⚠️")
     else:
         with st.spinner("⏳ Calculating route..."):
-            # Extract only the first word of the unit (for logic)
             unit_choice = "metric" if "metric" in unit else "imperial"
             calculate_route(start_point, dest_point, start_name, dest_name, vehicle, unit_choice)
             st.toast("Roast calculated!", icon="✅")
+  main
