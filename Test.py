@@ -221,4 +221,3 @@ if calc_btn:
             # Extract only the first word of the unit (for logic)
             unit_choice = "metric" if "metric" in unit else "imperial"
             calculate_route(start_point, dest_point, start_name, dest_name, vehicle, unit_choice)
-graphhopper.com
