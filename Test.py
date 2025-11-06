@@ -4,9 +4,10 @@ import urllib.parse
 import random
 import pandas as pd
 import polyline
+import pydeck as pdk  # <-- ADDED for advanced mapping
 
 # === GraphHopper Configuration ===
-API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"
+API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"  # Note: Exposing API keys in scripts is risky for production
 GEOCODE_URL = "https://graphhopper.com/api/1/geocode?"
 ROUTE_URL = "https://graphhopper.com/api/1/route?"
 OSM_SEARCH_URL = "https://nominatim.openstreetmap.org/search?"
@@ -118,18 +119,93 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
     st.subheader("🗺️ Route Map")
     encoded_points = path.get("points")
 
+    # === MAP FIX: Use Pydeck for a solid Path line ===
     if encoded_points and path.get("points_encoded", True):
         try:
+            # 1. Decode the polyline
             decoded_path = polyline.decode(encoded_points)
-            map_data = pd.DataFrame(decoded_path, columns=['lat', 'lon'])
-            st.map(map_data)
+            
+            if not decoded_path:
+                raise Exception("Decoded path is empty.")
+
+            # 2. Format for pydeck PathLayer: list of [lon, lat]
+            # Note: polyline.decode gives (lat, lon), Pydeck needs [lon, lat]
+            path_data = [[lon, lat] for lat, lon in decoded_path]
+
+            # 3. Calculate midpoint and zoom for the view
+            midpoint_lat = (lat1 + lat2) / 2
+            midpoint_lng = (lng1 + lng2) / 2
+            
+            # Simple zoom calculation based on distance
+            dist_km = dist_m / 1000
+            if dist_km > 500:
+                zoom = 5
+            elif dist_km > 200:
+                zoom = 7
+            elif dist_km > 50:
+                zoom = 9
+            elif dist_km > 10:
+                zoom = 11
+            else:
+                zoom = 13
+
+            # 4. Define the Pydeck ViewState
+            view_state = pdk.ViewState(
+                latitude=midpoint_lat,
+                longitude=midpoint_lng,
+                zoom=zoom,
+                pitch=0,
+            )
+
+            # 5. Define the Pydeck PathLayer
+            path_df = pd.DataFrame([{"path": path_data, "name": "Route Path"}])
+            layer = pdk.Layer(
+                "PathLayer",
+                data=path_df,
+                get_path="path",
+                get_color="[0, 85, 255, 200]",  # Blue color (R, G, B, A)
+                get_width=5,
+                width_min_pixels=3,
+                pickable=True
+            )
+
+            # 5b. Define the Pin Layer (NEW)
+            point_data = pd.DataFrame([
+                {"coordinates": [lng1, lat1], "name": "Start", "color": [0, 200, 0, 255]},       # Green
+                {"coordinates": [lng2, lat2], "name": "Destination", "color": [255, 0, 0, 255]} # Red
+            ])
+            
+            pin_layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=point_data,
+                get_position="coordinates",
+                get_fill_color="color",
+                get_radius=100,
+                radius_min_pixels=6,
+                pickable=True
+            )
+
+            # 6. Create the Deck and render it
+            r = pdk.Deck(
+                layers=[layer, pin_layer], # <-- ADDED pin_layer
+                initial_view_state=view_state,
+                # FIX for black map: Use a map style that doesn't require a Mapbox token
+                map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+                tooltip={"html": "<b>{name}</b>"} # Tooltip will now work for pins and path
+            )
+            st.pydeck_chart(r)
+
         except Exception as e:
-            st.error(f"Error decoding map path: {e}")
+            st.error(f"Error decoding/displaying map path: {e}")
+            st.warning("Displaying start and end points only.")
             map_data = pd.DataFrame({'lat': [lat1, lat2], 'lon': [lng1, lng2]})
-            st.map(map_data)
+            st.map(map_data) # Fallback to st.map
     else:
+        # Fallback if no points are encoded
+        st.warning("No map path data available. Displaying start and end points.")
         map_data = pd.DataFrame({'lat': [lat1, lat2], 'lon': [lng1, lng2]})
         st.map(map_data)
+    # === END OF MAP FIX ===
 
     # --- Details in Tabs ---
     st.divider()
@@ -235,6 +311,7 @@ def update_suggestions(mode):
     query = st.session_state.get(f"{mode}_query_input", "")
     st.session_state[f"{mode}_suggestions"] = get_geocode_suggestions(query)
     st.session_state[f"selected_{mode}_point"] = None
+    st.session_state[f"{mode}_select"] = "" # Clear display name on new search
 
 def set_location(mode, suggestion):
     st.session_state[f"selected_{mode}_point"] = suggestion["point"]
