@@ -2,9 +2,12 @@ import streamlit as st
 import requests
 import urllib.parse
 import random
+import pandas as pd
+import polyline
+import pydeck as pdk  # <-- ADDED for advanced mapping
 
 # === GraphHopper Configuration ===
-API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"
+API_KEY = "82dcc496-97d4-45d7-b807-abc1f7b7eebe"  # Note: Exposing API keys in scripts is risky for production
 GEOCODE_URL = "https://graphhopper.com/api/1/geocode?"
 ROUTE_URL = "https://graphhopper.com/api/1/route?"
 OSM_SEARCH_URL = "https://nominatim.openstreetmap.org/search?"
@@ -57,7 +60,8 @@ def search_poi(lat, lng, keyword, radius_km=3):
     }
     return safe_request(OSM_SEARCH_URL, params)
 
-def display_poi_results(results):
+def display_poi_results(title, results):
+    st.subheader(title)
     if not results:
         st.info("No locations found.")
         return
@@ -65,7 +69,8 @@ def display_poi_results(results):
         name = place.get("display_name", "Unknown")
         lat = place.get("lat", "")
         lon = place.get("lon", "")
-        st.markdown(f"- **{name}** \n 📍 Lat: {lat}, Lng: {lon}")
+        st.markdown(f"- *{name}*")
+        st.caption(f"📍 Lat: {lat}, Lng: {lon}")
 
 # === Route Calculation ===
 def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, unit):
@@ -76,8 +81,10 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
         "key": API_KEY,
         "vehicle": vehicle,
         "point": [f"{lat1},{lng1}", f"{lat2},{lng2}"],
-        "instructions": "true"
+        "instructions": "true",
+        "points_encoded": "true"
     }
+
     data = safe_request(ROUTE_URL, params)
     if not data or "paths" not in data or len(data["paths"]) == 0:
         st.error("❌ Unable to retrieve route data.")
@@ -99,40 +106,134 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
     sec = int(time_ms / 1000 % 60)
     time_text = f"{hrs:02d}:{mins:02d}:{sec:02d}"
 
-    # --- Tabs ---
+    # --- Display Summary ---
     st.success("✅ Route calculated successfully!")
+    st.subheader("📊 Summary")
+    st.write(f"*From:* {start_name}")
+    st.write(f"*To:* {dest_name}")
+    st.write(f"*Vehicle:* {vehicle.capitalize()}")
+    st.write(f"*Distance:* {dist_text}")
+    st.write(f"*Duration:* {time_text}")
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Summary & Directions",
-        "🚧 Road Traffic Conditions",
-        "🍽️ Nearby Restaurants",
-        "⛽ Nearby Gas Stations"
-    ])
+    # --- Map Display ---
+    st.subheader("🗺️ Route Map")
+    encoded_points = path.get("points")
 
-    # --- Summary & Directions Tab ---
+    # === MAP FIX: Use Pydeck for a solid Path line ===
+    if encoded_points and path.get("points_encoded", True):
+        try:
+            # 1. Decode the polyline
+            decoded_path = polyline.decode(encoded_points)
+            
+            if not decoded_path:
+                raise Exception("Decoded path is empty.")
+
+            # 2. Format for pydeck PathLayer: list of [lon, lat]
+            # Note: polyline.decode gives (lat, lon), Pydeck needs [lon, lat]
+            path_data = [[lon, lat] for lat, lon in decoded_path]
+
+            # 3. Calculate midpoint and zoom for the view
+            midpoint_lat = (lat1 + lat2) / 2
+            midpoint_lng = (lng1 + lng2) / 2
+            
+            # Simple zoom calculation based on distance
+            dist_km = dist_m / 1000
+            if dist_km > 500:
+                zoom = 5
+            elif dist_km > 200:
+                zoom = 7
+            elif dist_km > 50:
+                zoom = 9
+            elif dist_km > 10:
+                zoom = 11
+            else:
+                zoom = 13
+
+            # 4. Define the Pydeck ViewState
+            view_state = pdk.ViewState(
+                latitude=midpoint_lat,
+                longitude=midpoint_lng,
+                zoom=zoom,
+                pitch=0,
+            )
+
+            # 5. Define the Pydeck PathLayer
+            path_df = pd.DataFrame([{"path": path_data, "name": "Route Path"}])
+            layer = pdk.Layer(
+                "PathLayer",
+                data=path_df,
+                get_path="path",
+                get_color="[0, 85, 255, 200]",  # Blue color (R, G, B, A)
+                get_width=5,
+                width_min_pixels=3,
+                pickable=True
+            )
+
+            # 5b. Define the Pin Layer (NEW)
+            point_data = pd.DataFrame([
+                {"coordinates": [lng1, lat1], "name": "Start", "color": [0, 200, 0, 255]},       # Green
+                {"coordinates": [lng2, lat2], "name": "Destination", "color": [255, 0, 0, 255]} # Red
+            ])
+            
+            pin_layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=point_data,
+                get_position="coordinates",
+                get_fill_color="color",
+                get_radius=100,
+                radius_min_pixels=6,
+                pickable=True
+            )
+
+            # 6. Create the Deck and render it
+            r = pdk.Deck(
+                layers=[layer, pin_layer], # <-- ADDED pin_layer
+                initial_view_state=view_state,
+                # FIX for black map: Use a map style that doesn't require a Mapbox token
+                map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+                tooltip={"html": "<b>{name}</b>"} # Tooltip will now work for pins and path
+            )
+            st.pydeck_chart(r)
+
+        except Exception as e:
+            st.error(f"Error decoding/displaying map path: {e}")
+            st.warning("Displaying start and end points only.")
+            map_data = pd.DataFrame({'lat': [lat1, lat2], 'lon': [lng1, lng2]})
+            st.map(map_data) # Fallback to st.map
+    else:
+        # Fallback if no points are encoded
+        st.warning("No map path data available. Displaying start and end points.")
+        map_data = pd.DataFrame({'lat': [lat1, lat2], 'lon': [lng1, lng2]})
+        st.map(map_data)
+    # === END OF MAP FIX ===
+
+    # --- Details in Tabs ---
+    st.divider()
+    tab_titles = [
+        "🛣️ Directions",
+        "🚦 Road & Traffic Conditions",
+        "🍽️ Nearby Places",
+        "⛽ Gas Stations Nearby"
+    ]
+    tab1, tab2, tab3, tab4 = st.tabs(tab_titles)
+
+    # --- Directions (Tab 1) ---
     with tab1:
-        st.subheader("📊 Summary")
-        st.write(f"*From:* {start_name}")
-        st.write(f"*To:* {dest_name}")
-        st.write(f"*Vehicle:* {vehicle.capitalize()}")
-        st.write(f"*Distance:* {dist_text}")
-        st.write(f"*Duration:* {time_text}")
-
-        st.divider()
-        st.subheader("🛣️ Directions")
-        for i, inst in enumerate(path.get("instructions", []), 1):
+        instructions = path.get("instructions", [])
+        if not instructions:
+            st.info("No turn-by-turn directions available.")
+        for i, inst in enumerate(instructions, 1):
             step = inst.get("text", "")
             step_dist_m = inst.get("distance", 0)
             step_dist = step_dist_m / (1000 if unit == "metric" else 1609.34)
             unit_symbol = "km" if unit == "metric" else "miles"
-            st.markdown(f"**{i}.** {step} ({step_dist:.2f} {unit_symbol})")
+            st.markdown(f"*{i}.* {step} ({step_dist:.2f} {unit_symbol})")
 
-    # --- Road Traffic Conditions Tab ---
+    # --- Road & Traffic Conditions (Tab 2) ---
     with tab2:
         if vehicle in ["car", "bike"]:
-            st.subheader("🚧 Road & Traffic Conditions")
-
             def simulate_road_conditions(instructions):
+                """Simulate random traffic or construction events."""
                 simulated = []
                 for inst in instructions:
                     condition = None
@@ -142,7 +243,7 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
                     elif rand < 0.30:
                         condition = "🚗 Heavy Traffic"
                     elif rand < 0.40:
-                        condition = "⚠️ Minor Delay"
+                        condition = "⏱️ Minor Delay"
                     if condition:
                         simulated.append({
                             "text": inst.get("text", ""),
@@ -153,32 +254,32 @@ def calculate_route(start_point, dest_point, start_name, dest_name, vehicle, uni
             conditions = simulate_road_conditions(path.get("instructions", []))
             if conditions:
                 for c in conditions:
-                    st.warning(f"{c['condition']} near **{c['text']}**")
+                    st.warning(f"{c['condition']} near *{c['text']}*")
             else:
-                st.info("✅ No traffic or road construction reported along this route.")
+                st.info("✅ No traffic or road construction reported.")
         else:
-            st.info("🚶 Road and traffic conditions are only available for cars and bikes.")
+            st.info("N/A for this vehicle type.")
 
-    # --- Nearby Restaurants Tab ---
+
+    # --- POIs (Tab 3) ---
     with tab3:
-        st.subheader("🍔 Nearby Restaurants")
         midpoint_lat = (lat1 + lat2) / 2
         midpoint_lng = (lng1 + lng2) / 2
-        display_poi_results(search_poi(lat1, lng1, "restaurant"))
-        display_poi_results(search_poi(midpoint_lat, midpoint_lng, "restaurant"))
-        display_poi_results(search_poi(lat2, lng2, "restaurant"))
+        # Always show restaurants
+        display_poi_results("🍔 Restaurants near START", search_poi(lat1, lng1, "restaurant"))
+        display_poi_results("🍔 Restaurants MID-ROUTE", search_poi(midpoint_lat, midpoint_lng, "restaurant"))
+        display_poi_results("🍔 Restaurants near DESTINATION", search_poi(lat2, lng2, "restaurant"))
 
-    # --- Nearby Gas Stations Tab ---
+    # --- Gas Stations (Tab 4) ---
     with tab4:
+        # Only show gas stations for cars
         if vehicle == "car":
-            st.subheader("⛽ Gas Stations Nearby")
-            midpoint_lat = (lat1 + lat2) / 2
-            midpoint_lng = (lng1 + lng2) / 2
-            display_poi_results(search_poi(lat1, lng1, "fuel"))
-            display_poi_results(search_poi(midpoint_lat, midpoint_lng, "fuel"))
-            display_poi_results(search_poi(lat2, lng2, "fuel"))
+            display_poi_results("⛽ Gas Stations near START", search_poi(lat1, lng1, "fuel"))
+            display_poi_results("⛽ Gas Stations MID-ROUTE", search_poi(midpoint_lat, midpoint_lng, "fuel"))
+            display_poi_results("⛽ Gas Stations near DESTINATION", search_poi(lat2, lng2, "fuel"))
         else:
-            st.info("⛽ Gas station info is only available for cars.")
+            st.info("N/A for this vehicle type.")
+
 
 # === Streamlit UI Setup ===
 st.set_page_config(page_title="Route Planner", layout="wide")
@@ -194,13 +295,12 @@ hide_st_style = """
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
 st.title("🗺️ Route Planner")
-st.caption("Find the best route with nearby restaurants, gas stations, and traffic updates.")
+st.caption("Find the best route with nearby restaurants and gas stations.")
 
 # Initialize session state
 for key in [
-    "start_suggestions", "dest_suggestions",
-    "selected_start_point", "selected_dest_point",
-    "start_query_input", "dest_query_input",
+    "start_suggestions", "dest_suggestions", "selected_start_point",
+    "selected_dest_point", "start_query_input", "dest_query_input",
     "start_select", "dest_select"
 ]:
     if key not in st.session_state:
@@ -211,6 +311,7 @@ def update_suggestions(mode):
     query = st.session_state.get(f"{mode}_query_input", "")
     st.session_state[f"{mode}_suggestions"] = get_geocode_suggestions(query)
     st.session_state[f"selected_{mode}_point"] = None
+    st.session_state[f"{mode}_select"] = "" # Clear display name on new search
 
 def set_location(mode, suggestion):
     st.session_state[f"selected_{mode}_point"] = suggestion["point"]
@@ -222,27 +323,56 @@ def clear_all():
     for key in st.session_state.keys():
         st.session_state[key] = [] if "suggestions" in key else None if "point" in key else ""
 
+def reverse_locations():
+    # Swap points
+    st.session_state.selected_start_point, st.session_state.selected_dest_point = \
+        st.session_state.selected_dest_point, st.session_state.selected_start_point
+    
+    # Swap query inputs
+    st.session_state.start_query_input, st.session_state.dest_query_input = \
+        st.session_state.dest_query_input, st.session_state.start_query_input
+        
+    # Swap display names (used in calculate_route)
+    st.session_state.start_select, st.session_state.dest_select = \
+        st.session_state.dest_select, st.session_state.start_select
+    
+    # Clear suggestions as they are no longer relevant
+    st.session_state.start_suggestions = []
+    st.session_state.dest_suggestions = []
+
 # === Sidebar Inputs ===
 with st.sidebar:
     st.header("Inputs")
 
     # Start
     st.text_input("📍 Start Location", key="start_query_input", on_change=lambda: update_suggestions("start"))
+    # --- Show selected start point ---
+    if st.session_state.selected_start_point and st.session_state.start_select:
+        st.success(f"Selected: {st.session_state.start_select}")
+
     if st.session_state.start_suggestions:
         st.write("Suggestions:")
         for i, s in enumerate(st.session_state.start_suggestions):
             st.button(s["display_name"], key=f"start_{i}", on_click=lambda s=s: set_location("start", s), use_container_width=True)
 
+    # --- Reverse Button ---
+    st. button("🔄 Reverse Start & Destination", on_click=reverse_locations, use_container_width=True)
+
     # Destination
     st.text_input("📍 Destination", key="dest_query_input", on_change=lambda: update_suggestions("dest"))
+    # --- Show selected dest point ---
+    if st.session_state.selected_dest_point and st.session_state.dest_select:
+        st.success(f"Selected: {st.session_state.dest_select}")
+
     if st.session_state.dest_suggestions:
         st.write("Suggestions:")
         for i, s in enumerate(st.session_state.dest_suggestions):
             st.button(s["display_name"], key=f"dest_{i}", on_click=lambda s=s: set_location("dest", s), use_container_width=True)
 
+    
+    st.divider()
     vehicle = st.selectbox("Vehicle Type", ["car", "bike", "foot"])
     unit = st.radio("Distance Unit", ["metric (km)", "imperial (mi)"], horizontal=True)
-
     col1, col2 = st.columns(2)
     with col1:
         calc_btn = st.button("Get Directions", type="primary", use_container_width=True)
@@ -258,9 +388,13 @@ if calc_btn:
 
     if not start_point or not dest_point or not start_name or not dest_name:
         st.error("⚠️ Please search for and select both a start and destination.")
+        st.toast("Please select locations.", icon="⚠️")
     elif start_point == dest_point:
         st.error("⚠️ Start and destination cannot be the same.")
+        st.toast("Locations are the same.", icon="⚠️")
     else:
         with st.spinner("⏳ Calculating route..."):
+            # Extract only the first word of the unit (for logic)
             unit_choice = "metric" if "metric" in unit else "imperial"
             calculate_route(start_point, dest_point, start_name, dest_name, vehicle, unit_choice)
+            st.toast("Route calculated!", icon="✅")
